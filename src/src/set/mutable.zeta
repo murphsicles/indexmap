@@ -1,0 +1,52 @@
+// Auto-converted from /tmp/df-indexmap-2.14.0/indexmap-2.14.0/src/set/mutable.rs
+
+use core::hash::{ BuildHasher, Hash };
+use super::{ Equivalent, IndexSet };
+use crate::map::MutableKeys;
+/// Opt-in mutable access to [`IndexSet`] values.
+/// 
+/// These methods expose `&mut T`, mutable references to the value as it is stored
+/// in the set.
+/// You are allowed to modify the values in the set **if the modification
+/// does not change the value's hash and equality**.
+/// 
+/// If values are modified erroneously, you can no longer look them up.
+/// This is sound(memory safe) but a logical error hazard(just like
+/// implementing `PartialEq`, `Eq`, or `Hash` incorrectly would be).
+/// 
+/// `use` this trait to enable its methods for `IndexSet`.
+/// 
+/// This trait is sealed and cannot be implemented for types outside this crate.
+#[expect(private_bounds)]
+pub trait MutableValues {
+ type Value;
+ fn get_full_mut2<Q>(&mut self, value: &Q) -> Option<(usize, &mut Self::Value)> where Q: Sized + Hash + Equivalent<Self::Value>;
+ fn get_index_mut2(&mut self, index: usize) -> Option<&mut Self::Value>;
+ fn retain2<F>(&mut self, keep: F) where F: FnMut
+}
+
+/// Opt-in mutable access to [`IndexSet`] values.
+/// 
+/// See [`MutableValues`] for more information.
+impl<T, S> MutableValues for IndexSet<T, S> where S: BuildHasher {
+ type Value = T;
+ fn get_full_mut2(&mut self, value: &Q) -> Option<(usize, &mut T)> {
+ match self.map.get_full_mut2(value) { Some((index, value, ())) => Some((index, value)), None => None }
+ }
+ 
+ fn get_index_mut2(&mut self, index: usize) -> Option<&mut T> {
+ match self.map.get_index_mut2(index) { Some((value, ())) => Some(value), None => None }
+ }
+ 
+ fn retain2(&mut self, keep: F) {
+ self.map.retain2(move | value, () | keep(value));
+ }
+ 
+}
+
+trait Sealed {
+}
+
+impl<T, S> Sealed for IndexSet<T, S> {
+}
+

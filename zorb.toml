@@ -1,0 +1,6 @@
+name = "@collections/indexmap"
+version = "2.14.0"
+description = ""
+license = "MIT"
+repository = "https://github.com/murphsicles/indexmap"
+readme = "README.md"

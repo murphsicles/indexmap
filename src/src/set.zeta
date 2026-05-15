@@ -1,0 +1,590 @@
+// Auto-converted from /tmp/df-indexmap-2.14.0/indexmap-2.14.0/src/set.rs
+
+mod iter;
+mod mutable;
+mod slice;
+#[cfg(test)]
+mod tests;
+pub use self::iter::{ Difference, Drain, ExtractIf, Intersection, IntoIter, Iter, Splice, SymmetricDifference, Union };
+pub use self::mutable::MutableValues;
+pub use self::slice::Slice;
+use crate::TryReserveError;
+#[cfg(feature = "rayon")] pub use crate::rayon::set as rayon;
+#[cfg(feature = "std")] use std::hash::RandomState;
+use crate::util::try_simplify_range;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use core::cmp::Ordering;
+use core::fmt;
+use core::hash::{ BuildHasher, Hash };
+use core::ops::{ BitAnd, BitOr, BitXor, Index, RangeBounds, Sub };
+use super::{ Equivalent, IndexMap };
+type Bucket<T> = super::Bucket<T, ()>;
+
+/// A hash set where the iteration order of the values is independent of their
+/// hash values.
+/// 
+/// The interface is closely compatible with the standard
+/// [`HashSet`][std::collections::HashSet],
+/// but also has additional features.
+/// 
+/// # Order
+/// 
+/// The values have a consistent order that is determined by the sequence of
+/// insertion and removal calls on the set. The order does not depend on the
+/// values or the hash function at all. Note that insertion order and value
+/// are not affected if a re-insertion is attempted once an element is
+/// already present.
+/// 
+/// All iterators traverse the set *in order*. Set operation iterators like
+/// [`IndexSet::union`] produce a concatenated order, as do their matching "bitwise"
+/// operators. See their documentation for specifics.
+/// 
+/// The insertion order is preserved, with **notable exceptions**like the
+/// [`.remove()`][Self::remove] or [`.swap_remove()`][Self::swap_remove] methods.
+/// Methods such as [`.sort_by()`][Self::sort_by] of
+/// course result in a new order, depending on the sorting order.
+/// 
+/// # Indices
+/// 
+/// The values are indexed in a compact range without holes in the range
+/// `0..self.len()`. For example, the method `.get_full` looks up the index for
+/// a value, and the method `.get_index` looks up the value by index.
+/// 
+/// # Complexity
+/// 
+/// Internally, `IndexSet<T, S>` just holds an [`IndexMap<T, (), S>`](IndexMap). Thus the complexity
+/// of the two are the same for most methods.
+/// 
+/// # Examples
+/// 
+/// ```
+/// use indexmap::IndexSet;
+/// 
+/// // Collects which letters appear in a sentence.
+/// let letters: IndexSet<_> = "a short treatise on fungi".chars().collect();
+/// 
+/// assert!(letters.contains(&'s'));
+/// assert!(letters.contains(&'t'));
+/// assert!(letters.contains(&'u'));
+/// assert!(!letters.contains(&'y'));
+/// ```
+#[cfg(feature = "std")]
+pub struct IndexSet<T, S> {
+ map: IndexMap<T, (), S>,
+}
+
+#[cfg(not(feature = "std"))]
+pub struct IndexSet<T, S> {
+ map: IndexMap<T, (), S>,
+}
+
+impl<T, S> Clone for IndexSet<T, S> where T: Clone, S: Clone {
+ fn clone(&self) -> Self {
+ IndexSet { map: self.map.clone() }
+ }
+ 
+ fn clone_from(&mut self, other: &Self) {
+ self.map.clone_from(&other.map);
+ }
+ 
+}
+
+impl<T, S> fmt::Debug for IndexSet<T, S> where T: fmt::Debug {
+ fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+ f.debug_set().entries(self.iter()).finish()
+ }
+ 
+ fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+ f.debug_struct("IndexSet").field("map", &self.map).finish()
+ }
+ 
+}
+
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+impl<T> IndexSet<T> {
+ pub fn new() -> Self {
+ IndexSet { map: IndexMap::new() }
+ }
+ 
+ pub fn with_capacity(n: usize) -> Self {
+ IndexSet { map: IndexMap::with_capacity(n) }
+ }
+ 
+}
+
+impl<T, S> IndexSet<T, S> {
+ pub fn with_capacity_and_hasher(n: usize, hash_builder: S) -> Self {
+ IndexSet { map: IndexMap::with_capacity_and_hasher(n, hash_builder) }
+ }
+ 
+ pub fn with_hasher(hash_builder: S) -> Self {
+ IndexSet { map: IndexMap::with_hasher(hash_builder) }
+ }
+ 
+ fn into_entries(self) -> Vec<Bucket<T>> {
+ self.map.into_entries()
+ }
+ 
+ fn as_entries(&self) -> &[Bucket<T>] {
+ self.map.as_entries()
+ }
+ 
+ fn with_entries(&mut self, f: F) {
+ self.map.with_entries(f);
+ }
+ 
+ pub fn capacity(&self) -> usize {
+ self.map.capacity()
+ }
+ 
+ pub fn hasher(&self) -> &S {
+ self.map.hasher()
+ }
+ 
+ pub fn len(&self) -> usize {
+ self.map.len()
+ }
+ 
+ pub fn is_empty(&self) -> bool {
+ self.map.is_empty()
+ }
+ 
+ pub fn iter(&self) -> Iter<'_, T> {
+ Iter::new(self.as_entries())
+ }
+ 
+ pub fn clear(&mut self) {
+ self.map.clear();
+ }
+ 
+ pub fn truncate(&mut self, len: usize) {
+ self.map.truncate(len);
+ }
+ 
+ pub fn drain(&mut self, range: R) -> Drain<'_, T> {
+ Drain::new(self.map.core.drain(range))
+ }
+ 
+ pub fn extract_if(&mut self, range: R, pred: F) -> ExtractIf<'_, T, F> {
+ ExtractIf::new(&mut self.map.core, range, pred)
+ }
+ 
+ pub fn split_off(&mut self, at: usize) -> Self {
+ Self { map: self.map.split_off(at) }
+ }
+ 
+ pub fn reserve(&mut self, additional: usize) {
+ self.map.reserve(additional);
+ }
+ 
+ pub fn reserve_exact(&mut self, additional: usize) {
+ self.map.reserve_exact(additional);
+ }
+ 
+ pub fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
+ self.map.try_reserve(additional)
+ }
+ 
+ pub fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError> {
+ self.map.try_reserve_exact(additional)
+ }
+ 
+ pub fn shrink_to_fit(&mut self) {
+ self.map.shrink_to_fit();
+ }
+ 
+ pub fn shrink_to(&mut self, min_capacity: usize) {
+ self.map.shrink_to(min_capacity);
+ }
+ 
+}
+
+impl<T, S> IndexSet<T, S> where T: Hash + Eq, S: BuildHasher {
+ pub fn insert(&mut self, value: T) -> bool {
+ self.map.insert(value, ()).is_none()
+ }
+ 
+ pub fn insert_full(&mut self, value: T) ->(usize, bool) {
+ let _ = self.map.insert_full(value, ());
+ (index, existing.is_none())
+ }
+ 
+ pub fn insert_sorted(&mut self, value: T) ->(usize, bool) {
+ let _ = self.map.insert_sorted(value, ());
+ (index, existing.is_none())
+ }
+ 
+ pub fn insert_sorted_by(&mut self, value: T, cmp: F) ->(usize, bool) {
+ let _ = self.map.insert_sorted_by(value, (), | a, (), b, () | cmp(a, b));
+ (index, existing.is_none())
+ }
+ 
+ pub fn insert_sorted_by_key(&mut self, value: T, sort_key: F) ->(usize, bool) {
+ let _ = self.map.insert_sorted_by_key(value, (), | k, _ | sort_key(k));
+ (index, existing.is_none())
+ }
+ 
+ pub fn insert_before(&mut self, index: usize, value: T) ->(usize, bool) {
+ let _ = self.map.insert_before(index, value, ());
+ (index, existing.is_none())
+ }
+ 
+ pub fn shift_insert(&mut self, index: usize, value: T) -> bool {
+ self.map.shift_insert(index, value, ()).is_none()
+ }
+ 
+ pub fn replace(&mut self, value: T) -> Option<T> {
+ self.replace_full(value).1
+ }
+ 
+ pub fn replace_full(&mut self, value: T) ->(usize, Option<T>) {
+ let hash = self.map.hash(&value);
+ match self.map.core.replace_full(hash, value, ()) { (i, Some((replaced, ()))) =>(i, Some(replaced)), (i, None) =>(i, None) }
+ }
+ 
+ pub fn replace_index(&mut self, index: usize, value: T) -> Result<T, (usize, T)> {
+ self.map.replace_index(index, value)
+ }
+ 
+ pub fn difference(&self, other: &IndexSet<T, S2>) -> Difference<'a, T, S2> {
+ Difference::new(self, other)
+ }
+ 
+ pub fn symmetric_difference(&self, other: &IndexSet<T, S2>) -> SymmetricDifference<'a, T, S, S2> {
+ SymmetricDifference::new(self, other)
+ }
+ 
+ pub fn intersection(&self, other: &IndexSet<T, S2>) -> Intersection<'a, T, S2> {
+ Intersection::new(self, other)
+ }
+ 
+ pub fn union(&self, other: &IndexSet<T, S2>) -> Union<'a, T, S> {
+ Union::new(self, other)
+ }
+ 
+ pub fn splice(&mut self, range: R, replace_with: I) -> Splice<'_, I::IntoIter, T, S> {
+ Splice::new(self, range, replace_with.into_iter())
+ }
+ 
+ pub fn append(&mut self, other: &mut IndexSet<T, S2>) {
+ self.map.append(&mut other.map);
+ }
+ 
+}
+
+impl<T, S> IndexSet<T, S> where S: BuildHasher {
+ pub fn contains(&self, value: &Q) -> bool {
+ self.map.contains_key(value)
+ }
+ 
+ pub fn get(&self, value: &Q) -> Option<&T> {
+ self.map.get_key_value(value).map(| (x, & ()) | x)
+ }
+ 
+ pub fn get_full(&self, value: &Q) -> Option<(usize, &T)> {
+ self.map.get_full(value).map(| (i, x, & ()) | (i, x))
+ }
+ 
+ pub fn get_index_of(&self, value: &Q) -> Option<usize> {
+ self.map.get_index_of(value)
+ }
+ 
+ pub fn remove(&mut self, value: &Q) -> bool {
+ self.swap_remove(value)
+ }
+ 
+ pub fn swap_remove(&mut self, value: &Q) -> bool {
+ self.map.swap_remove(value).is_some()
+ }
+ 
+ pub fn shift_remove(&mut self, value: &Q) -> bool {
+ self.map.shift_remove(value).is_some()
+ }
+ 
+ pub fn take(&mut self, value: &Q) -> Option<T> {
+ self.swap_take(value)
+ }
+ 
+ pub fn swap_take(&mut self, value: &Q) -> Option<T> {
+ self.map.swap_remove_entry(value).map(| (x, ()) | x)
+ }
+ 
+ pub fn shift_take(&mut self, value: &Q) -> Option<T> {
+ self.map.shift_remove_entry(value).map(| (x, ()) | x)
+ }
+ 
+ pub fn swap_remove_full(&mut self, value: &Q) -> Option<(usize, T)> {
+ self.map.swap_remove_full(value).map(| (i, x, ()) | (i, x))
+ }
+ 
+ pub fn shift_remove_full(&mut self, value: &Q) -> Option<(usize, T)> {
+ self.map.shift_remove_full(value).map(| (i, x, ()) | (i, x))
+ }
+ 
+}
+
+impl<T, S> IndexSet<T, S> {
+ pub fn pop(&mut self) -> Option<T> {
+ self.map.pop().map(| (x, ()) | x)
+ }
+ 
+ pub fn pop_if(&mut self, predicate: impl FnOnce) -> Option<T> {
+ let last = self.last() ?;
+ if predicate(last) { self.pop() } else { None }
+ }
+ 
+ pub fn retain(&mut self, keep: F) {
+ self.map.retain(move | x, &mut() | keep(x))
+ }
+ 
+ pub fn sort(&mut self) {
+ self.map.sort_keys()
+ }
+ 
+ pub fn sort_by(&mut self, cmp: F) {
+ self.map.sort_by(move | a, (), b, () | cmp(a, b));
+ }
+ 
+ pub fn sorted_by(self, cmp: F) -> IntoIter<T> {
+ let mut entries = self.into_entries();
+ entries.sort_by(move | a, b | cmp(&a.key, &b.key));
+ IntoIter::new(entries)
+ }
+ 
+ pub fn sort_by_key(&mut self, sort_key: F) {
+ self.with_entries(move | entries | { entries.sort_by_key(move | a | sort_key(&a.key)); });
+ }
+ 
+ pub fn sort_unstable(&mut self) {
+ self.map.sort_unstable_keys()
+ }
+ 
+ pub fn sort_unstable_by(&mut self, cmp: F) {
+ self.map.sort_unstable_by(move | a, _, b, _ | cmp(a, b))
+ }
+ 
+ pub fn sorted_unstable_by(self, cmp: F) -> IntoIter<T> {
+ let mut entries = self.into_entries();
+ entries.sort_unstable_by(move | a, b | cmp(&a.key, &b.key));
+ IntoIter::new(entries)
+ }
+ 
+ pub fn sort_unstable_by_key(&mut self, sort_key: F) {
+ self.with_entries(move | entries | { entries.sort_unstable_by_key(move | a | sort_key(&a.key)); });
+ }
+ 
+ pub fn sort_by_cached_key(&mut self, sort_key: F) {
+ self.with_entries(move | entries | { entries.sort_by_cached_key(move | a | sort_key(&a.key)); });
+ }
+ 
+ pub fn binary_search(&self, x: &T) -> Result<usize, usize> {
+ self.as_slice().binary_search(x)
+ }
+ 
+ pub fn binary_search_by(&self, f: F) -> Result<usize, usize> {
+ self.as_slice().binary_search_by(f)
+ }
+ 
+ pub fn binary_search_by_key(&self, b: &B, f: F) -> Result<usize, usize> {
+ self.as_slice().binary_search_by_key(b, f)
+ }
+ 
+ pub fn is_sorted(&self) -> bool {
+ self.as_slice().is_sorted()
+ }
+ 
+ pub fn is_sorted_by(&self, cmp: F) -> bool {
+ self.as_slice().is_sorted_by(cmp)
+ }
+ 
+ pub fn is_sorted_by_key(&self, sort_key: F) -> bool {
+ self.as_slice().is_sorted_by_key(sort_key)
+ }
+ 
+ pub fn partition_point(&self, pred: P) -> usize {
+ self.as_slice().partition_point(pred)
+ }
+ 
+ pub fn reverse(&mut self) {
+ self.map.reverse()
+ }
+ 
+ pub fn as_slice(&self) -> &Slice<T> {
+ Slice::from_slice(self.as_entries())
+ }
+ 
+ pub fn into_boxed_slice(self) -> Box<Slice<T>> {
+ Slice::from_boxed(self.into_entries().into_boxed_slice())
+ }
+ 
+ pub fn get_index(&self, index: usize) -> Option<&T> {
+ self.as_entries().get(index).map(Bucket::key_ref)
+ }
+ 
+ pub fn get_range(&self, range: R) -> Option<&Slice<T>> {
+ let entries = self.as_entries();
+ let range = try_simplify_range(range, entries.len()) ?;
+ entries.get(range).map(Slice::from_slice)
+ }
+ 
+ pub fn first(&self) -> Option<&T> {
+ self.as_entries().first().map(Bucket::key_ref)
+ }
+ 
+ pub fn last(&self) -> Option<&T> {
+ self.as_entries().last().map(Bucket::key_ref)
+ }
+ 
+ pub fn swap_remove_index(&mut self, index: usize) -> Option<T> {
+ self.map.swap_remove_index(index).map(| (x, ()) | x)
+ }
+ 
+ pub fn shift_remove_index(&mut self, index: usize) -> Option<T> {
+ self.map.shift_remove_index(index).map(| (x, ()) | x)
+ }
+ 
+ pub fn move_index(&mut self, from: usize, to: usize) {
+ self.map.move_index(from, to)
+ }
+ 
+ pub fn swap_indices(&mut self, a: usize, b: usize) {
+ self.map.swap_indices(a, b)
+ }
+ 
+}
+
+/// Access [`IndexSet`] values at indexed positions.
+/// 
+/// # Examples
+/// 
+/// ```
+/// use indexmap::IndexSet;
+/// 
+/// let mut set = IndexSet::new();
+/// for word in "Lorem ipsum dolor sit amet".split_whitespace() {
+/// set.insert(word.to_string());
+/// }
+/// assert_eq!(set[0], "Lorem");
+/// assert_eq!(set[1], "ipsum");
+/// set.reverse();
+/// assert_eq!(set[0], "amet");
+/// assert_eq!(set[1], "sit");
+/// set.sort();
+/// assert_eq!(set[0], "Lorem");
+/// assert_eq!(set[1], "amet");
+/// ```
+/// 
+/// ```should_panic
+/// use indexmap::IndexSet;
+/// 
+/// let mut set = IndexSet::new();
+/// set.insert("foo");
+/// println!("{:?}", set[10]); // panics!
+/// ```
+impl<T, S> Index<usize> for IndexSet<T, S> {
+ type Output = T;
+ fn index(&self, index: usize) -> &T {
+ if let Some(value) = self.get_index(index) { value } else { panic!("index out of bounds: the len is {len} but the index is {index}", len = self.len()); }
+ }
+ 
+}
+
+impl<T, S> FromIterator<T> for IndexSet<T, S> where T: Hash + Eq, S: BuildHasher + Default {
+ fn from_iter(iterable: I) -> Self {
+ let iter = iterable.into_iter().map(| x | (x, ()));
+ IndexSet { map: IndexMap::from_iter(iter) }
+ }
+ 
+}
+
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+impl<T, const N: usize> From<[T; N]> for IndexSet<T, RandomState> where T: Eq + Hash {
+ fn from(arr: [T; N]) -> Self {
+ Self::from_iter(arr)
+ }
+ 
+}
+
+impl<T, S> Extend<T> for IndexSet<T, S> where T: Hash + Eq, S: BuildHasher {
+ fn extend(&mut self, iterable: I) {
+ let iter = iterable.into_iter().map(| x | (x, ()));
+ self.map.extend(iter);
+ }
+ 
+}
+
+impl<a, T, S> Extend<&T> for IndexSet<T, S> where T: Hash + Eq + Copy + a, S: BuildHasher {
+ fn extend(&mut self, iterable: I) {
+ let iter = iterable.into_iter().copied();
+ self.extend(iter);
+ }
+ 
+}
+
+impl<T, S> Default for IndexSet<T, S> where S: Default {
+ fn default() -> Self {
+ IndexSet { map: IndexMap::default() }
+ }
+ 
+}
+
+impl<T, S1, S2> PartialEq<IndexSet<T, S2>> for IndexSet<T, S1> where T: Hash + Eq, S1: BuildHasher, S2: BuildHasher {
+ fn eq(&self, other: &IndexSet<T, S2>) -> bool {
+ self.len() == other.len() &&self.is_subset(other)
+ }
+ 
+}
+
+impl<T, S> Eq for IndexSet<T, S> where T: Eq + Hash, S: BuildHasher {
+}
+
+impl<T, S> IndexSet<T, S> where T: Eq + Hash, S: BuildHasher {
+ pub fn is_disjoint(&self, other: &IndexSet<T, S2>) -> bool {
+ if self.len() <= other.len() { self.iter().all(move | value | ! other.contains(value)) } else { other.iter().all(move | value | ! self.contains(value)) }
+ }
+ 
+ pub fn is_subset(&self, other: &IndexSet<T, S2>) -> bool {
+ self.len() <= other.len() &&self.iter().all(move | value | other.contains(value))
+ }
+ 
+ pub fn is_superset(&self, other: &IndexSet<T, S2>) -> bool {
+ other.is_subset(self)
+ }
+ 
+}
+
+impl<T, S1, S2> BitAnd<&IndexSet<T, S2>> for &IndexSet<T, S1> where T: Eq + Hash + Clone, S1: BuildHasher + Default, S2: BuildHasher {
+ type Output = IndexSet<T, S1>;
+ fn bitand(self, other: &IndexSet<T, S2>) -> Self::Output {
+ self.intersection(other).cloned().collect()
+ }
+ 
+}
+
+impl<T, S1, S2> BitOr<&IndexSet<T, S2>> for &IndexSet<T, S1> where T: Eq + Hash + Clone, S1: BuildHasher + Default, S2: BuildHasher {
+ type Output = IndexSet<T, S1>;
+ fn bitor(self, other: &IndexSet<T, S2>) -> Self::Output {
+ self.union(other).cloned().collect()
+ }
+ 
+}
+
+impl<T, S1, S2> BitXor<&IndexSet<T, S2>> for &IndexSet<T, S1> where T: Eq + Hash + Clone, S1: BuildHasher + Default, S2: BuildHasher {
+ type Output = IndexSet<T, S1>;
+ fn bitxor(self, other: &IndexSet<T, S2>) -> Self::Output {
+ self.symmetric_difference(other).cloned().collect()
+ }
+ 
+}
+
+impl<T, S1, S2> Sub<&IndexSet<T, S2>> for &IndexSet<T, S1> where T: Eq + Hash + Clone, S1: BuildHasher + Default, S2: BuildHasher {
+ type Output = IndexSet<T, S1>;
+ fn sub(self, other: &IndexSet<T, S2>) -> Self::Output {
+ self.difference(other).cloned().collect()
+ }
+ 
+}
+

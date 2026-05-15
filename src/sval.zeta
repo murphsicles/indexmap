@@ -1,0 +1,22 @@
+// Auto-converted from /tmp/df-indexmap-2.14.0/indexmap-2.14.0/src/sval.rs
+
+use crate::{ IndexMap, IndexSet };
+use sval::{ Stream, Value };
+impl<K: Value, V: Value, S> Value for IndexMap<K, V, S> {
+ fn stream(&self, stream: &mut ST) -> sval::Result {
+ stream.map_begin(Some(self.len())) ?;
+ for(k, v) in self { stream.map_key_begin() ?; stream.value(k) ?; stream.map_key_end() ?; stream.map_value_begin() ?; stream.value(v) ?; stream.map_value_end() ?; }
+ stream.map_end()
+ }
+ 
+}
+
+impl<K: Value, S> Value for IndexSet<K, S> {
+ fn stream(&self, stream: &mut ST) -> sval::Result {
+ stream.seq_begin(Some(self.len())) ?;
+ for value in self { stream.seq_value_begin() ?; stream.value(value) ?; stream.seq_value_end() ?; }
+ stream.seq_end()
+ }
+ 
+}
+

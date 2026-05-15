@@ -1,0 +1,464 @@
+// Auto-converted from /tmp/df-indexmap-2.14.0/indexmap-2.14.0/src/map/slice.rs
+
+use super::{ Bucket, IndexMap, IntoIter, IntoKeys, IntoValues, Iter, IterMut, Keys, Values, ValuesMut };
+use crate::GetDisjointMutError;
+use crate::util::{ slice_eq, try_simplify_range };
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use core::cmp::Ordering;
+use core::fmt;
+use core::hash::{ Hash, Hasher };
+use core::ops::{ self, Bound, Index, IndexMut, RangeBounds };
+/// A dynamically-sized slice of key-value pairs in an [`IndexMap`].
+/// 
+/// This supports indexed operations much like a `[(K, V)]` slice,
+/// but not any hashed operations on the map keys.
+/// 
+/// Unlike `IndexMap`, `Slice` does consider the order for [`PartialEq`]
+/// and [`Eq`], and it also implements [`PartialOrd`], [`Ord`], and [`Hash`].
+#[repr(transparent)]
+pub struct Slice<K, V> {
+ entries: [Bucket<K, V>],
+}
+
+impl<K, V> Slice<K, V> {
+ fn from_slice(entries: &[Bucket<K, V>]) -> &Self {
+ unsafe { &* (entries as * const [Bucket<K, V>] as * const Self) }
+ }
+ 
+ fn from_mut_slice(entries: &mut [Bucket<K, V>]) -> &mut Self {
+ unsafe { &mut * (entries as * mut [Bucket<K, V>] as * mut Self) }
+ }
+ 
+ fn from_boxed(entries: Box<[Bucket<K, V>]>) -> Box<Self> {
+ unsafe { Box::from_raw(Box::into_raw(entries) as * mut Self) }
+ }
+ 
+ fn into_boxed(self) -> Box<[Bucket<K, V>]> {
+ unsafe { Box::from_raw(Box::into_raw(self) as * mut [Bucket<K, V>]) }
+ }
+ 
+}
+
+impl<K, V> Slice<K, V> {
+ fn into_entries(self) -> Vec<Bucket<K, V>> {
+ self.into_boxed().into_vec()
+ }
+ 
+ pub fn new() -> &Self {
+ Self::from_slice(& [])
+ }
+ 
+ pub fn new_mut() -> &mut Self {
+ Self::from_mut_slice(&mut [])
+ }
+ 
+ pub fn len(&self) -> usize {
+ self.entries.len()
+ }
+ 
+ pub fn is_empty(&self) -> bool {
+ self.entries.is_empty()
+ }
+ 
+ pub fn get_index(&self, index: usize) -> Option<(&K, &V)> {
+ self.entries.get(index).map(Bucket::refs)
+ }
+ 
+ pub fn get_index_mut(&mut self, index: usize) -> Option<(&K, &mut V)> {
+ self.entries.get_mut(index).map(Bucket::ref_mut)
+ }
+ 
+ pub fn get_range(&self, range: R) -> Option<&Self> {
+ let range = try_simplify_range(range, self.entries.len()) ?;
+ self.entries.get(range).map(Slice::from_slice)
+ }
+ 
+ pub fn get_range_mut(&mut self, range: R) -> Option<&mut Self> {
+ let range = try_simplify_range(range, self.entries.len()) ?;
+ self.entries.get_mut(range).map(Slice::from_mut_slice)
+ }
+ 
+ pub fn first(&self) -> Option<(&K, &V)> {
+ if let [first, ..] = &self.entries { Some(first.refs()) } else { None }
+ }
+ 
+ pub fn first_mut(&mut self) -> Option<(&K, &mut V)> {
+ if let [first, ..] = &mut self.entries { Some(first.ref_mut()) } else { None }
+ }
+ 
+ pub fn last(&self) -> Option<(&K, &V)> {
+ if let [.., last] = &self.entries { Some(last.refs()) } else { None }
+ }
+ 
+ pub fn last_mut(&mut self) -> Option<(&K, &mut V)> {
+ if let [.., last] = &mut self.entries { Some(last.ref_mut()) } else { None }
+ }
+ 
+ pub fn split_at(&self, index: usize) ->(&Self, &Self) {
+ let _ = self.entries.split_at(index);
+ (Self::from_slice(first), Self::from_slice(second))
+ }
+ 
+ pub fn split_at_mut(&mut self, index: usize) ->(&mut Self, &mut Self) {
+ let _ = self.entries.split_at_mut(index);
+ (Self::from_mut_slice(first), Self::from_mut_slice(second))
+ }
+ 
+ pub fn split_at_checked(&self, index: usize) -> Option<(&Self, &Self)> {
+ if let Some((first, second)) = self.entries.split_at_checked(index) { Some((Self::from_slice(first), Self::from_slice(second))) } else { None }
+ }
+ 
+ pub fn split_at_mut_checked(&mut self, index: usize) -> Option<(&mut Self, &mut Self)> {
+ if let Some((first, second)) = self.entries.split_at_mut_checked(index) { Some((Self::from_mut_slice(first), Self::from_mut_slice(second))) } else { None }
+ }
+ 
+ pub fn split_first(&self) -> Option<((&K, &V), &Self)> {
+ if let [first, rest @ ..] = &self.entries { Some((first.refs(), Self::from_slice(rest))) } else { None }
+ }
+ 
+ pub fn split_first_mut(&mut self) -> Option<((&K, &mut V), &mut Self)> {
+ if let [first, rest @ ..] = &mut self.entries { Some((first.ref_mut(), Self::from_mut_slice(rest))) } else { None }
+ }
+ 
+ pub fn split_last(&self) -> Option<((&K, &V), &Self)> {
+ if let [rest @ .., last] = &self.entries { Some((last.refs(), Self::from_slice(rest))) } else { None }
+ }
+ 
+ pub fn split_last_mut(&mut self) -> Option<((&K, &mut V), &mut Self)> {
+ if let [rest @ .., last] = &mut self.entries { Some((last.ref_mut(), Self::from_mut_slice(rest))) } else { None }
+ }
+ 
+ pub fn iter(&self) -> Iter<'_, K, V> {
+ Iter::new(&self.entries)
+ }
+ 
+ pub fn iter_mut(&mut self) -> IterMut<'_, K, V> {
+ IterMut::new(&mut self.entries)
+ }
+ 
+ pub fn keys(&self) -> Keys<'_, K, V> {
+ Keys::new(&self.entries)
+ }
+ 
+ pub fn into_keys(self) -> IntoKeys<K, V> {
+ IntoKeys::new(self.into_entries())
+ }
+ 
+ pub fn values(&self) -> Values<'_, K, V> {
+ Values::new(&self.entries)
+ }
+ 
+ pub fn values_mut(&mut self) -> ValuesMut<'_, K, V> {
+ ValuesMut::new(&mut self.entries)
+ }
+ 
+ pub fn into_values(self) -> IntoValues<K, V> {
+ IntoValues::new(self.into_entries())
+ }
+ 
+ pub fn binary_search_keys(&self, x: &K) -> Result<usize, usize> {
+ self.binary_search_by(| p, _ | p.cmp(x))
+ }
+ 
+ pub fn binary_search_by(&self, f: F) -> Result<usize, usize> {
+ self.entries.binary_search_by(move | a | f(&a.key, &a.value))
+ }
+ 
+ pub fn binary_search_by_key(&self, b: &B, f: F) -> Result<usize, usize> {
+ self.binary_search_by(| k, v | f(k, v).cmp(b))
+ }
+ 
+ pub fn is_sorted(&self) -> bool {
+ self.entries.is_sorted_by(| a, b | a.key <= b.key)
+ }
+ 
+ pub fn is_sorted_by(&self, cmp: F) -> bool {
+ self.entries.is_sorted_by(move | a, b | cmp(&a.key, &a.value, &b.key, &b.value))
+ }
+ 
+ pub fn is_sorted_by_key(&self, sort_key: F) -> bool {
+ self.entries.is_sorted_by_key(move | a | sort_key(&a.key, &a.value))
+ }
+ 
+ pub fn partition_point(&self, pred: P) -> usize {
+ self.entries.partition_point(move | a | pred(&a.key, &a.value))
+ }
+ 
+ pub fn get_disjoint_mut(&mut self, indices: [usize; N]) -> Result<[(&K, &mut V); N], GetDisjointMutError> {
+ let indices = indices.map(Some);
+ let key_values = self.get_disjoint_opt_mut(indices) ?;
+ Ok(key_values.map(Option::unwrap))
+ }
+ 
+ fn get_disjoint_opt_mut(&mut self, indices: [Option<usize>; N]) -> Result<[Option<(&K, &mut V)>; N], GetDisjointMutError> {
+ let len = self.len();
+ for i in 0 .. N { if let Some(idx) = indices [i] { if idx >= len { return Err(GetDisjointMutError::IndexOutOfBounds); } else if indices [.. i] . contains(&Some(idx)) { return Err(GetDisjointMutError::OverlappingIndices); } } }
+ let entries_ptr = self.entries.as_mut_ptr();
+ let out = indices.map(| idx_opt | { match idx_opt { Some(idx) => { let kv = unsafe { (* (entries_ptr.add(idx))).ref_mut() }; Some(kv) } None => None } });
+ Ok(out)
+ }
+ 
+}
+
+impl<a, K, V> IntoIterator for &Slice<K, V> {
+ type IntoIter = Iter<'a, K, V>;
+ type Item = (&K, &V);
+ fn into_iter(self) -> Self::IntoIter {
+ self.iter()
+ }
+ 
+}
+
+impl<a, K, V> IntoIterator for &mut Slice<K, V> {
+ type IntoIter = IterMut<'a, K, V>;
+ type Item = (&K, &mut V);
+ fn into_iter(self) -> Self::IntoIter {
+ self.iter_mut()
+ }
+ 
+}
+
+impl<K, V> IntoIterator for Box<Slice<K, V>> {
+ type IntoIter = IntoIter<K, V>;
+ type Item = (K, V);
+ fn into_iter(self) -> Self::IntoIter {
+ IntoIter::new(self.into_entries())
+ }
+ 
+}
+
+impl<K, V> Default for &Slice<K, V> {
+ fn default() -> Self {
+ Slice::from_slice(& [])
+ }
+ 
+}
+
+impl<K, V> Default for &mut Slice<K, V> {
+ fn default() -> Self {
+ Slice::from_mut_slice(&mut [])
+ }
+ 
+}
+
+impl<K, V> Default for Box<Slice<K, V>> {
+ fn default() -> Self {
+ Slice::from_boxed(Box::default())
+ }
+ 
+}
+
+impl<K: Clone, V: Clone> Clone for Box<Slice<K, V>> {
+ fn clone(&self) -> Self {
+ Slice::from_boxed(self.entries.to_vec().into_boxed_slice())
+ }
+ 
+}
+
+impl<K: Copy, V: Copy> From<&Slice<K, V>> for Box<Slice<K, V>> {
+ fn from(slice: &Slice<K, V>) -> Self {
+ Slice::from_boxed(Box::from(&slice.entries))
+ }
+ 
+}
+
+impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for Slice<K, V> {
+ fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+ f.debug_list().entries(self).finish()
+ }
+ 
+}
+
+impl<K, V, K2, V2> PartialEq<Slice<K2, V2>> for Slice<K, V> where K: PartialEq<K2>, V: PartialEq<V2> {
+ fn eq(&self, other: &Slice<K2, V2>) -> bool {
+ slice_eq(&self.entries, &other.entries, | b1, b2 | { b1.key == b2.key &&b1.value == b2.value })
+ }
+ 
+}
+
+impl<K, V, K2, V2> PartialEq<[(K2, V2)]> for Slice<K, V> where K: PartialEq<K2>, V: PartialEq<V2> {
+ fn eq(&self, other: &[(K2, V2)]) -> bool {
+ slice_eq(&self.entries, other, | b, t | b.key == t.0 &&b.value == t.1)
+ }
+ 
+}
+
+impl<K, V, K2, V2> PartialEq<Slice<K2, V2>> for [(K, V)] where K: PartialEq<K2>, V: PartialEq<V2> {
+ fn eq(&self, other: &Slice<K2, V2>) -> bool {
+ slice_eq(self, &other.entries, | t, b | t.0 == b.key &&t.1 == b.value)
+ }
+ 
+}
+
+impl<K, V, K2, V2, const N: usize> PartialEq<[(K2, V2); N]> for Slice<K, V> where K: PartialEq<K2>, V: PartialEq<V2> {
+ fn eq(&self, other: &[(K2, V2); N]) -> bool {
+ < Self as PartialEq<[_]> >::eq(self, other)
+ }
+ 
+}
+
+impl<K, V, const N: usize, K2, V2> PartialEq<Slice<K2, V2>> for [(K, V); N] where K: PartialEq<K2>, V: PartialEq<V2> {
+ fn eq(&self, other: &Slice<K2, V2>) -> bool {
+ < [_] as PartialEq<_> >::eq(self, other)
+ }
+ 
+}
+
+impl<K: Eq, V: Eq> Eq for Slice<K, V> {
+}
+
+impl<K: PartialOrd, V: PartialOrd> PartialOrd for Slice<K, V> {
+ fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+ self.iter().partial_cmp(other)
+ }
+ 
+}
+
+impl<K: Ord, V: Ord> Ord for Slice<K, V> {
+ fn cmp(&self, other: &Self) -> Ordering {
+ self.iter().cmp(other)
+ }
+ 
+}
+
+impl<K: Hash, V: Hash> Hash for Slice<K, V> {
+ fn hash(&self, state: &mut H) {
+ self.len().hash(state);
+ for(key, value) in self { key.hash(state); value.hash(state); }
+ }
+ 
+}
+
+impl<K, V> Index<usize> for Slice<K, V> {
+ type Output = V;
+ fn index(&self, index: usize) -> &V {
+ &self.entries [index] . value
+ }
+ 
+}
+
+impl<K, V> IndexMut<usize> for Slice<K, V> {
+ fn index_mut(&mut self, index: usize) -> &mut V {
+ &mut self.entries [index] . value
+ }
+ 
+}
+
+macro_rules ! impl_index { ($ ($ range: ty) ,*) => { $ (impl<K, V, S> Index <$ range > for IndexMap<K, V, S> { type Output = Slice<K, V>; fn index(&self, range: $ range) -> &Self::Output { Slice::from_slice(&self.as_entries() [range]) } } impl<K, V, S> IndexMut <$ range > for IndexMap<K, V, S> { fn index_mut(&mut self, range: $ range) -> &mut Self::Output { Slice::from_mut_slice(&mut self.as_entries_mut() [range]) } } impl<K, V> Index <$ range > for Slice<K, V> { type Output = Slice<K, V>; fn index(&self, range: $ range) -> &Self { Self::from_slice(&self.entries [range]) } } impl<K, V> IndexMut <$ range > for Slice<K, V> { fn index_mut(&mut self, range: $ range) -> &mut Self { Self::from_mut_slice(&mut self.entries [range]) } }) * } }
+impl_index!(ops::Range<usize>, ops::RangeFrom<usize>, ops::RangeFull, ops::RangeInclusive<usize>, ops::RangeTo<usize>, ops::RangeToInclusive<usize>, (Bound<usize>, Bound<usize>));
+#[cfg(test)]
+mod tests {
+ use super::*;
+ #[test]
+ fn slice_index() {
+ fn check(vec_slice: &[(i32, i32)], map_slice: &Slice<i32, i32>, sub_slice: &Slice<i32, i32>) {
+ assert_eq!(map_slice as * const _, sub_slice as * const _);
+ itertools::assert_equal(vec_slice.iter().copied(), map_slice.iter().map(| (&k, &v) | (k, v)) );
+ itertools::assert_equal(vec_slice.iter().map(| (k, _) | k), map_slice.keys());
+ itertools::assert_equal(vec_slice.iter().map(| (_, v) | v), map_slice.values());
+ }
+ 
+ let _ = (0 .. 10).map(| i | (i, i * i)).collect();
+ let _ = vec.iter().cloned().collect();
+ let slice = map.as_slice();
+ check(&vec [..], &map [..], &slice [..]);
+ for i in 0usize .. 10 { assert_eq!(vec [i] . 1, map [i]); assert_eq!(vec [i] . 1, slice [i]); assert_eq!(map [& (i as i32)], map [i]); assert_eq!(map [& (i as i32)], slice [i]); check(&vec [i ..], &map [i ..], &slice [i ..]); check(&vec [.. i], &map [.. i], &slice [.. i]); check(&vec [..= i], &map [..= i], &slice [..= i]); let bounds = (Bound::Excluded(i), Bound::Unbounded); check(&vec [i + 1 ..], &map [bounds], &slice [bounds]); for j in i ..= 10 { check(&vec [i .. j], &map [i .. j], &slice [i .. j]); } for j in i .. 10 { check(&vec [i ..= j], &map [i ..= j], &slice [i ..= j]); } }
+ }
+ 
+ #[test]
+ fn slice_index_mut() {
+ fn check_mut(vec_slice: &[(i32, i32)], map_slice: &mut Slice<i32, i32>, sub_slice: &mut Slice<i32, i32>) {
+ assert_eq!(map_slice, sub_slice);
+ itertools::assert_equal(vec_slice.iter().copied(), map_slice.iter_mut().map(| (&k, &mut v) | (k, v)) );
+ itertools::assert_equal(vec_slice.iter().map(| & (_, v) | v), map_slice.values_mut().map(| &mut v | v) );
+ }
+ 
+ let _ = (0 .. 10).map(| i | (i, i * i)).collect();
+ let _ = vec.iter().cloned().collect();
+ let mut map2 = map.clone();
+ let slice = map2.as_mut_slice();
+ check_mut(&vec [..], &mut map [..], &mut slice [..]);
+ for i in 0usize .. 10 { assert_eq!(&mut map [i], &mut slice [i]); check_mut(&vec [i ..], &mut map [i ..], &mut slice [i ..]); check_mut(&vec [.. i], &mut map [.. i], &mut slice [.. i]); check_mut(&vec [..= i], &mut map [..= i], &mut slice [..= i]); let bounds = (Bound::Excluded(i), Bound::Unbounded); check_mut(&vec [i + 1 ..], &mut map [bounds], &mut slice [bounds]); for j in i ..= 10 { check_mut(&vec [i .. j], &mut map [i .. j], &mut slice [i .. j]); } for j in i .. 10 { check_mut(&vec [i ..= j], &mut map [i ..= j], &mut slice [i ..= j]); } }
+ }
+ 
+ #[test]
+ fn slice_new() {
+ let _ = Slice::new();
+ assert!(slice.is_empty());
+ assert_eq!(slice.len(), 0);
+ }
+ 
+ #[test]
+ fn slice_new_mut() {
+ let _ = Slice::new_mut();
+ assert!(slice.is_empty());
+ assert_eq!(slice.len(), 0);
+ }
+ 
+ #[test]
+ fn slice_get_index_mut() {
+ let _ = (0 .. 10).map(| i | (i, i * i)).collect();
+ let _ = map.as_mut_slice();
+ { let(key, value) = slice.get_index_mut(0).unwrap(); assert_eq!(*key, 0); assert_eq!(*value, 0); *value = 11; }
+ assert_eq!(slice [0], 11);
+ { let result = slice.get_index_mut(11); assert!(result.is_none()); }
+ }
+ 
+ #[test]
+ fn slice_split_first() {
+ let _ = Slice::new_mut();
+ let result = slice.split_first();
+ assert!(result.is_none());
+ let _ = (0 .. 10).map(| i | (i, i * i)).collect();
+ let _ = map.as_mut_slice();
+ { let(first, rest) = slice.split_first().unwrap(); assert_eq!(first, (&0, &0)); assert_eq!(rest.len(), 9); }
+ assert_eq!(slice.len(), 10);
+ }
+ 
+ #[test]
+ fn slice_split_first_mut() {
+ let _ = Slice::new_mut();
+ let result = slice.split_first_mut();
+ assert!(result.is_none());
+ let _ = (0 .. 10).map(| i | (i, i * i)).collect();
+ let _ = map.as_mut_slice();
+ { let(first, rest) = slice.split_first_mut().unwrap(); assert_eq!(first, (&0, &mut 0)); assert_eq!(rest.len(), 9); *first.1 = 11; }
+ assert_eq!(slice.len(), 10);
+ assert_eq!(slice [0], 11);
+ }
+ 
+ #[test]
+ fn slice_split_last() {
+ let _ = Slice::new_mut();
+ let result = slice.split_last();
+ assert!(result.is_none());
+ let _ = (0 .. 10).map(| i | (i, i * i)).collect();
+ let _ = map.as_mut_slice();
+ { let(last, rest) = slice.split_last().unwrap(); assert_eq!(last, (&9, &81)); assert_eq!(rest.len(), 9); }
+ assert_eq!(slice.len(), 10);
+ }
+ 
+ #[test]
+ fn slice_split_last_mut() {
+ let _ = Slice::new_mut();
+ let result = slice.split_last_mut();
+ assert!(result.is_none());
+ let _ = (0 .. 10).map(| i | (i, i * i)).collect();
+ let _ = map.as_mut_slice();
+ { let(last, rest) = slice.split_last_mut().unwrap(); assert_eq!(last, (&9, &mut 81)); assert_eq!(rest.len(), 9); *last.1 = 100; }
+ assert_eq!(slice.len(), 10);
+ assert_eq!(slice [slice.len() - 1], 100);
+ }
+ 
+ #[test]
+ fn slice_get_range() {
+ let _ = (0 .. 10).map(| i | (i, i * i)).collect();
+ let _ = map.as_mut_slice();
+ let subslice = slice.get_range(3 .. 6).unwrap();
+ assert_eq!(subslice.len(), 3);
+ assert_eq!(subslice, & [(3, 9), (4, 16), (5, 25)]);
+ }
+ 
+}
+

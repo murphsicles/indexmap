@@ -1,0 +1,489 @@
+// Auto-converted from /tmp/df-indexmap-2.14.0/indexmap-2.14.0/src/rayon/set.rs
+
+use super::collect;
+use rayon::iter::plumbing::{ Consumer, ProducerCallback, UnindexedConsumer };
+use rayon::prelude::*;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use core::cmp::Ordering;
+use core::fmt;
+use core::hash::{ BuildHasher, Hash };
+use core::ops::RangeBounds;
+use crate::IndexSet;
+use crate::set::Slice;
+type Bucket<T> = crate::Bucket<T, ()>;
+
+impl<T, S> IntoParallelIterator for IndexSet<T, S> where T: Send {
+ type Item = T;
+ type Iter = IntoParIter<T>;
+ fn into_par_iter(self) -> Self::Iter {
+ IntoParIter { entries: self.into_entries() }
+ }
+ 
+}
+
+impl<T> IntoParallelIterator for Box<Slice<T>> where T: Send {
+ type Item = T;
+ type Iter = IntoParIter<T>;
+ fn into_par_iter(self) -> Self::Iter {
+ IntoParIter { entries: self.into_entries() }
+ }
+ 
+}
+
+/// A parallel owning iterator over the items of an [`IndexSet`].
+/// 
+/// This `struct` is created by the [`IndexSet::into_par_iter`] method
+/// (provided by rayon's [`IntoParallelIterator`] trait). See its documentation for more.
+pub struct IntoParIter<T> {
+ entries: Vec<Bucket<T>>,
+}
+
+impl<T: fmt::Debug> fmt::Debug for IntoParIter<T> {
+ fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+ let iter = self.entries.iter().map(Bucket::key_ref);
+ f.debug_list().entries(iter).finish()
+ }
+ 
+}
+
+impl<T: Send> ParallelIterator for IntoParIter<T> {
+ type Item = T;
+ // [unsupported impl item]
+}
+
+impl<T: Send> IndexedParallelIterator for IntoParIter<T> {
+ // [unsupported impl item]
+}
+
+impl<a, T, S> IntoParallelIterator for &IndexSet<T, S> where T: Sync {
+ type Item = &T;
+ type Iter = ParIter<'a, T>;
+ fn into_par_iter(self) -> Self::Iter {
+ ParIter { entries: self.as_entries() }
+ }
+ 
+}
+
+impl<a, T> IntoParallelIterator for &Slice<T> where T: Sync {
+ type Item = &T;
+ type Iter = ParIter<'a, T>;
+ fn into_par_iter(self) -> Self::Iter {
+ ParIter { entries: &self.entries }
+ }
+ 
+}
+
+/// A parallel iterator over the items of an [`IndexSet`].
+/// 
+/// This `struct` is created by the [`IndexSet::par_iter`] method
+/// (provided by rayon's [`IntoParallelRefIterator`] trait). See its documentation for more.
+/// 
+/// [`IndexSet::par_iter`]: ../struct.IndexSet.html#method.par_iter
+pub struct ParIter<a, T> {
+ entries: &[Bucket<T>],
+}
+
+impl<T> Clone for ParIter<'_, T> {
+ fn clone(&self) -> Self {
+ ParIter { .. *self }
+ }
+ 
+}
+
+impl<T: fmt::Debug> fmt::Debug for ParIter<'_, T> {
+ fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+ let iter = self.entries.iter().map(Bucket::key_ref);
+ f.debug_list().entries(iter).finish()
+ }
+ 
+}
+
+impl<a, T: Sync> ParallelIterator for ParIter<'a, T> {
+ type Item = &T;
+ // [unsupported impl item]
+}
+
+impl<T: Sync> IndexedParallelIterator for ParIter<'_, T> {
+ // [unsupported impl item]
+}
+
+impl<a, T, S> ParallelDrainRange<usize> for &mut IndexSet<T, S> where T: Send {
+ type Item = T;
+ type Iter = ParDrain<'a, T>;
+ fn par_drain(self, range: R) -> Self::Iter {
+ ParDrain { entries: self.map.core.par_drain(range) }
+ }
+ 
+}
+
+/// A parallel draining iterator over the items of an [`IndexSet`].
+/// 
+/// This `struct` is created by the [`IndexSet::par_drain`] method
+/// (provided by rayon's [`ParallelDrainRange`] trait). See its documentation for more.
+/// 
+/// [`IndexSet::par_drain`]: ../struct.IndexSet.html#method.par_drain
+pub struct ParDrain<a, T: Send> {
+ entries: rayon::vec::Drain<'a, Bucket<T>>,
+}
+
+impl<T: Send> ParallelIterator for ParDrain<'_, T> {
+ type Item = T;
+ // [unsupported impl item]
+}
+
+impl<T: Send> IndexedParallelIterator for ParDrain<'_, T> {
+ // [unsupported impl item]
+}
+
+/// Parallel iterator methods and other parallel methods.
+/// 
+/// The following methods **require crate feature `"rayon"`**.
+/// 
+/// See also the `IntoParallelIterator` implementations.
+impl<T, S> IndexSet<T, S> where T: Hash + Eq + Sync, S: BuildHasher + Sync {
+ pub fn par_difference(&self, other: &IndexSet<T, S2>) -> ParDifference<'a, T, S, S2> {
+ ParDifference { set1: self, set2: other }
+ }
+ 
+ pub fn par_symmetric_difference(&self, other: &IndexSet<T, S2>) -> ParSymmetricDifference<'a, T, S, S2> {
+ ParSymmetricDifference { set1: self, set2: other }
+ }
+ 
+ pub fn par_intersection(&self, other: &IndexSet<T, S2>) -> ParIntersection<'a, T, S, S2> {
+ ParIntersection { set1: self, set2: other }
+ }
+ 
+ pub fn par_union(&self, other: &IndexSet<T, S2>) -> ParUnion<'a, T, S, S2> {
+ ParUnion { set1: self, set2: other }
+ }
+ 
+ pub fn par_eq(&self, other: &IndexSet<T, S2>) -> bool {
+ self.len() == other.len() &&self.par_is_subset(other)
+ }
+ 
+ pub fn par_is_disjoint(&self, other: &IndexSet<T, S2>) -> bool {
+ if self.len() <= other.len() { self.par_iter().all(move | value | ! other.contains(value)) } else { other.par_iter().all(move | value | ! self.contains(value)) }
+ }
+ 
+ pub fn par_is_superset(&self, other: &IndexSet<T, S2>) -> bool {
+ other.par_is_subset(self)
+ }
+ 
+ pub fn par_is_subset(&self, other: &IndexSet<T, S2>) -> bool {
+ self.len() <= other.len() &&self.par_iter().all(move | value | other.contains(value))
+ }
+ 
+}
+
+/// A parallel iterator producing elements in the difference of [`IndexSet`]s.
+/// 
+/// This `struct` is created by the [`IndexSet::par_difference`] method.
+/// See its documentation for more.
+pub struct ParDifference<a, T, S1, S2> {
+ set1: &IndexSet<T, S1>,
+ set2: &IndexSet<T, S2>,
+}
+
+impl<T, S1, S2> Clone for ParDifference<'_, T, S1, S2> {
+ fn clone(&self) -> Self {
+ ParDifference { .. *self }
+ }
+ 
+}
+
+impl<T, S1, S2> fmt::Debug for ParDifference<'_, T, S1, S2> where T: fmt::Debug + Eq + Hash, S1: BuildHasher, S2: BuildHasher {
+ fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+ f.debug_list().entries(self.set1.difference(self.set2)).finish()
+ }
+ 
+}
+
+impl<a, T, S1, S2> ParallelIterator for ParDifference<'a, T, S1, S2> where T: Hash + Eq + Sync, S1: BuildHasher + Sync, S2: BuildHasher + Sync {
+ type Item = &T;
+ fn drive_unindexed(self, consumer: C) -> C::Result {
+ let _ = self;
+ set1.par_iter().filter(move | &item | ! set2.contains(item)).drive_unindexed(consumer)
+ }
+ 
+}
+
+/// A parallel iterator producing elements in the intersection of [`IndexSet`]s.
+/// 
+/// This `struct` is created by the [`IndexSet::par_intersection`] method.
+/// See its documentation for more.
+pub struct ParIntersection<a, T, S1, S2> {
+ set1: &IndexSet<T, S1>,
+ set2: &IndexSet<T, S2>,
+}
+
+impl<T, S1, S2> Clone for ParIntersection<'_, T, S1, S2> {
+ fn clone(&self) -> Self {
+ ParIntersection { .. *self }
+ }
+ 
+}
+
+impl<T, S1, S2> fmt::Debug for ParIntersection<'_, T, S1, S2> where T: fmt::Debug + Eq + Hash, S1: BuildHasher, S2: BuildHasher {
+ fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+ f.debug_list().entries(self.set1.intersection(self.set2)).finish()
+ }
+ 
+}
+
+impl<a, T, S1, S2> ParallelIterator for ParIntersection<'a, T, S1, S2> where T: Hash + Eq + Sync, S1: BuildHasher + Sync, S2: BuildHasher + Sync {
+ type Item = &T;
+ fn drive_unindexed(self, consumer: C) -> C::Result {
+ let _ = self;
+ set1.par_iter().filter(move | &item | set2.contains(item)).drive_unindexed(consumer)
+ }
+ 
+}
+
+/// A parallel iterator producing elements in the symmetric difference of [`IndexSet`]s.
+/// 
+/// This `struct` is created by the [`IndexSet::par_symmetric_difference`] method.
+/// See its documentation for more.
+pub struct ParSymmetricDifference<a, T, S1, S2> {
+ set1: &IndexSet<T, S1>,
+ set2: &IndexSet<T, S2>,
+}
+
+impl<T, S1, S2> Clone for ParSymmetricDifference<'_, T, S1, S2> {
+ fn clone(&self) -> Self {
+ ParSymmetricDifference { .. *self }
+ }
+ 
+}
+
+impl<T, S1, S2> fmt::Debug for ParSymmetricDifference<'_, T, S1, S2> where T: fmt::Debug + Eq + Hash, S1: BuildHasher, S2: BuildHasher {
+ fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+ f.debug_list().entries(self.set1.symmetric_difference(self.set2)).finish()
+ }
+ 
+}
+
+impl<a, T, S1, S2> ParallelIterator for ParSymmetricDifference<'a, T, S1, S2> where T: Hash + Eq + Sync, S1: BuildHasher + Sync, S2: BuildHasher + Sync {
+ type Item = &T;
+ fn drive_unindexed(self, consumer: C) -> C::Result {
+ let _ = self;
+ set1.par_difference(set2).chain(set2.par_difference(set1)).drive_unindexed(consumer)
+ }
+ 
+}
+
+/// A parallel iterator producing elements in the union of [`IndexSet`]s.
+/// 
+/// This `struct` is created by the [`IndexSet::par_union`] method.
+/// See its documentation for more.
+pub struct ParUnion<a, T, S1, S2> {
+ set1: &IndexSet<T, S1>,
+ set2: &IndexSet<T, S2>,
+}
+
+impl<T, S1, S2> Clone for ParUnion<'_, T, S1, S2> {
+ fn clone(&self) -> Self {
+ ParUnion { .. *self }
+ }
+ 
+}
+
+impl<T, S1, S2> fmt::Debug for ParUnion<'_, T, S1, S2> where T: fmt::Debug + Eq + Hash, S1: BuildHasher, S2: BuildHasher {
+ fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+ f.debug_list().entries(self.set1.union(self.set2)).finish()
+ }
+ 
+}
+
+impl<a, T, S1, S2> ParallelIterator for ParUnion<'a, T, S1, S2> where T: Hash + Eq + Sync, S1: BuildHasher + Sync, S2: BuildHasher + Sync {
+ type Item = &T;
+ fn drive_unindexed(self, consumer: C) -> C::Result {
+ let _ = self;
+ set1.par_iter().chain(set2.par_difference(set1)).drive_unindexed(consumer)
+ }
+ 
+}
+
+/// Parallel sorting methods.
+/// 
+/// The following methods **require crate feature `"rayon"`**.
+impl<T, S> IndexSet<T, S> where T: Send {
+ pub fn par_sort(&mut self) {
+ self.with_entries(| entries | { entries.par_sort_by(| a, b | T::cmp(&a.key, &b.key)); });
+ }
+ 
+ pub fn par_sort_by(&mut self, cmp: F) {
+ self.with_entries(| entries | { entries.par_sort_by(move | a, b | cmp(&a.key, &b.key)); });
+ }
+ 
+ pub fn par_sorted_by(self, cmp: F) -> IntoParIter<T> {
+ let mut entries = self.into_entries();
+ entries.par_sort_by(move | a, b | cmp(&a.key, &b.key));
+ IntoParIter { entries }
+ }
+ 
+ pub fn par_sort_by_key(&mut self, sort_key: F) {
+ self.with_entries(move | entries | { entries.par_sort_by_key(move | a | sort_key(&a.key)); });
+ }
+ 
+ pub fn par_sort_unstable(&mut self) {
+ self.with_entries(| entries | { entries.par_sort_unstable_by(| a, b | T::cmp(&a.key, &b.key)); });
+ }
+ 
+ pub fn par_sort_unstable_by(&mut self, cmp: F) {
+ self.with_entries(| entries | { entries.par_sort_unstable_by(move | a, b | cmp(&a.key, &b.key)); });
+ }
+ 
+ pub fn par_sorted_unstable_by(self, cmp: F) -> IntoParIter<T> {
+ let mut entries = self.into_entries();
+ entries.par_sort_unstable_by(move | a, b | cmp(&a.key, &b.key));
+ IntoParIter { entries }
+ }
+ 
+ pub fn par_sort_unstable_by_key(&mut self, sort_key: F) {
+ self.with_entries(move | entries | { entries.par_sort_unstable_by_key(move | a | sort_key(&a.key)); });
+ }
+ 
+ pub fn par_sort_by_cached_key(&mut self, sort_key: F) {
+ self.with_entries(move | entries | { entries.par_sort_by_cached_key(move | a | sort_key(&a.key)); });
+ }
+ 
+}
+
+impl<T, S> FromParallelIterator<T> for IndexSet<T, S> where T: Eq + Hash + Send, S: BuildHasher + Default + Send {
+ fn from_par_iter(iter: I) -> Self {
+ let list = collect(iter);
+ let len = list.iter().map(Vec::len).sum();
+ let mut set = Self::with_capacity_and_hasher(len, S::default());
+ for vec in list { set.extend(vec); }
+ set
+ }
+ 
+}
+
+impl<T, S> ParallelExtend<T> for IndexSet<T, S> where T: Eq + Hash + Send, S: BuildHasher + Send {
+ fn par_extend(&mut self, iter: I) {
+ for vec in collect(iter) { self.extend(vec); }
+ }
+ 
+}
+
+impl<a, T: a, S> ParallelExtend<&T> for IndexSet<T, S> where T: Copy + Eq + Hash + Send + Sync, S: BuildHasher + Send {
+ fn par_extend(&mut self, iter: I) {
+ for vec in collect(iter) { self.extend(vec); }
+ }
+ 
+}
+
+#[cfg(test)]
+mod tests {
+ use super::*;
+ #[test]
+ fn insert_order() {
+ let insert = [0, 4, 2, 12, 8, 7, 11, 5, 3, 17, 19, 22, 23];
+ let mut set = IndexSet::new();
+ for &elt in &insert { set.insert(elt); }
+ assert_eq!(set.par_iter().count(), set.len());
+ assert_eq!(set.par_iter().count(), insert.len());
+ insert.par_iter().zip(&set).for_each(| (a, b) | { assert_eq!(a, b); });
+ (0 .. insert.len()).into_par_iter().zip(&set).for_each(| (i, v) | { assert_eq!(set.get_index(i).unwrap(), v); });
+ }
+ 
+ #[test]
+ fn partial_eq_and_eq() {
+ let mut set_a = IndexSet::new();
+ set_a.insert(1);
+ set_a.insert(2);
+ let mut set_b = set_a.clone();
+ assert!(set_a.par_eq(&set_b));
+ set_b.swap_remove(&1);
+ assert!(! set_a.par_eq(&set_b));
+ set_b.insert(3);
+ assert!(! set_a.par_eq(&set_b));
+ let _ = set_b.into_par_iter().collect();
+ assert!(! set_a.par_eq(&set_c));
+ assert!(! set_c.par_eq(&set_a));
+ }
+ 
+ #[test]
+ fn extend() {
+ let mut set = IndexSet::new();
+ set.par_extend(vec ! [&1, &2, &3, &4]);
+ set.par_extend(vec ! [5, 6]);
+ assert_eq!(set.into_par_iter().collect::<Vec<_>>(), vec ! [1, 2, 3, 4, 5, 6]);
+ }
+ 
+ #[test]
+ fn comparisons() {
+ let _ = (0 .. 3).collect();
+ let _ = (3 .. 6).collect();
+ let _ = (0 .. 6).collect();
+ let _ = (3 .. 9).collect();
+ assert!(! set_a.par_is_disjoint(&set_a));
+ assert!(set_a.par_is_subset(&set_a));
+ assert!(set_a.par_is_superset(&set_a));
+ assert!(set_a.par_is_disjoint(&set_b));
+ assert!(set_b.par_is_disjoint(&set_a));
+ assert!(! set_a.par_is_subset(&set_b));
+ assert!(! set_b.par_is_subset(&set_a));
+ assert!(! set_a.par_is_superset(&set_b));
+ assert!(! set_b.par_is_superset(&set_a));
+ assert!(! set_a.par_is_disjoint(&set_c));
+ assert!(! set_c.par_is_disjoint(&set_a));
+ assert!(set_a.par_is_subset(&set_c));
+ assert!(! set_c.par_is_subset(&set_a));
+ assert!(! set_a.par_is_superset(&set_c));
+ assert!(set_c.par_is_superset(&set_a));
+ assert!(! set_c.par_is_disjoint(&set_d));
+ assert!(! set_d.par_is_disjoint(&set_c));
+ assert!(! set_c.par_is_subset(&set_d));
+ assert!(! set_d.par_is_subset(&set_c));
+ assert!(! set_c.par_is_superset(&set_d));
+ assert!(! set_d.par_is_superset(&set_c));
+ }
+ 
+ #[test]
+ fn iter_comparisons() {
+ use std::iter::empty;
+ fn check<a, I1, I2>(iter1: I1, iter2: I2) where I1: ParallelIterator<_>, I2: Iterator<_> {
+ let _ = iter1.copied().collect();
+ let _ = iter2.collect();
+ assert_eq!(v1, v2);
+ }
+ 
+ let _ = (0 .. 3).collect();
+ let _ = (3 .. 6).collect();
+ let _ = (0 .. 6).collect();
+ let _ = (3 .. 9).rev().collect();
+ check(set_a.par_difference(&set_a), empty());
+ check(set_a.par_symmetric_difference(&set_a), empty());
+ check(set_a.par_intersection(&set_a), 0 .. 3);
+ check(set_a.par_union(&set_a), 0 .. 3);
+ check(set_a.par_difference(&set_b), 0 .. 3);
+ check(set_b.par_difference(&set_a), 3 .. 6);
+ check(set_a.par_symmetric_difference(&set_b), 0 .. 6);
+ check(set_b.par_symmetric_difference(&set_a), (3 .. 6).chain(0 .. 3));
+ check(set_a.par_intersection(&set_b), empty());
+ check(set_b.par_intersection(&set_a), empty());
+ check(set_a.par_union(&set_b), 0 .. 6);
+ check(set_b.par_union(&set_a), (3 .. 6).chain(0 .. 3));
+ check(set_a.par_difference(&set_c), empty());
+ check(set_c.par_difference(&set_a), 3 .. 6);
+ check(set_a.par_symmetric_difference(&set_c), 3 .. 6);
+ check(set_c.par_symmetric_difference(&set_a), 3 .. 6);
+ check(set_a.par_intersection(&set_c), 0 .. 3);
+ check(set_c.par_intersection(&set_a), 0 .. 3);
+ check(set_a.par_union(&set_c), 0 .. 6);
+ check(set_c.par_union(&set_a), 0 .. 6);
+ check(set_c.par_difference(&set_d), 0 .. 3);
+ check(set_d.par_difference(&set_c), (6 .. 9).rev());
+ check(set_c.par_symmetric_difference(&set_d), (0 .. 3).chain((6 .. 9).rev()) );
+ check(set_d.par_symmetric_difference(&set_c), (6 .. 9).rev().chain(0 .. 3) );
+ check(set_c.par_intersection(&set_d), 3 .. 6);
+ check(set_d.par_intersection(&set_c), (3 .. 6).rev());
+ check(set_c.par_union(&set_d), (0 .. 6).chain((6 .. 9).rev()));
+ check(set_d.par_union(&set_c), (3 .. 9).rev().chain(0 .. 3));
+ }
+ 
+}
+
